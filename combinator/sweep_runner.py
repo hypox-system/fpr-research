@@ -6,15 +6,21 @@ Delta 29, 32, 38:
 - NO performance filtering before p-values (BH-FDR order)
 - Two-stage p-values: coarse (500) -> BH -> refined (10k)
 - No silent drop: all variants in variants.jsonl with status
+
+Fas 1 additions:
+- Experiment fingerprint (compute_experiment_id)
+- Knowledge base integration (finalize_sweep, events)
+- Trade data summaries (trade_summary, duration_summary, fold_results)
 """
 
 import json
+import logging
 import os
 import sys
 import time
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import yaml
@@ -31,10 +37,16 @@ from engine.walk_forward import WalkForwardConfig, walk_forward_split, walk_forw
 from engine.metrics import compute_metrics
 from utils import reason_codes
 from utils.canonical import canonicalize_spec
+from utils.experiment_fingerprint import compute_experiment_id
 from analysis.statistics import permutation_pvalue_batch
 from analysis.multiple_testing import benjamini_hochberg
 from analysis.deflated_sharpe import deflated_sharpe_ratio
 from analysis.negative_control import generate_surrogates, NegativeControlResult
+
+logger = logging.getLogger(__name__)
+
+# Default KB path
+DEFAULT_KB_PATH = 'research.db'
 
 
 @dataclass
@@ -73,7 +85,13 @@ class VariantResult:
     spec: Optional[dict] = None
 
     # Trade returns for p-value computation
+    # NOTE: Not included in JSONL (too large) - use trade_summary instead
     oos_trade_returns: Optional[np.ndarray] = None
+
+    # Trade data summaries (Fas 1) - included in JSONL
+    trade_summary: Optional[Dict[str, Any]] = None
+    duration_summary: Optional[Dict[str, Any]] = None
+    fold_results: Optional[List[Dict[str, Any]]] = None
 
     def to_dict(self) -> dict:
         """Convert to dict for JSON serialization."""
@@ -104,6 +122,12 @@ class VariantResult:
                 'surrogate_mean': self.surrogate_mean,
                 'surrogate_std': self.surrogate_std,
                 'surrogate_flagged': self.surrogate_flagged,
+                # Trade data summaries (Fas 1)
+                # NOTE: Don't include trade returns arrays in JSONL (too large)
+                # These are scalar summaries for post-mortem analysis
+                'trade_summary': self.trade_summary,
+                'duration_summary': self.duration_summary,
+                'fold_results': self.fold_results,
             })
 
         if self.spec:
@@ -216,6 +240,16 @@ def run_single_variant(
         # Get trade returns for p-value computation
         oos_returns = np.array([t.net_return for t in wf_result.oos_trade_log])
 
+        # Compute trade_summary (Fas 1)
+        trade_summary = _compute_trade_summary(oos_returns, variant_config)
+
+        # Compute duration_summary (Fas 1)
+        # Trade has entry_fill_bar and exit_fill_bar
+        duration_summary = _compute_duration_summary(wf_result.oos_trade_log)
+
+        # Compute fold_results (Fas 1)
+        fold_results = _compute_fold_results(wf_result.fold_results)
+
         return VariantResult(
             variant_id=variant_id,
             status='OK',
@@ -230,6 +264,9 @@ def run_single_variant(
             consistency_ratio=wf_result.consistency_ratio,
             spec=spec,
             oos_trade_returns=oos_returns,
+            trade_summary=trade_summary,
+            duration_summary=duration_summary,
+            fold_results=fold_results,
         )
 
     except Exception as e:
@@ -244,6 +281,103 @@ def run_single_variant(
             exception_summary=str(e)[:200],
             spec=variant_config,
         )
+
+
+def _compute_trade_summary(
+    oos_returns: np.ndarray,
+    variant_config: dict,
+) -> Dict[str, Any]:
+    """
+    Compute trade summary statistics for post-mortem.
+
+    Args:
+        oos_returns: Array of net OOS trade returns.
+        variant_config: Variant configuration (contains fee_rate, slippage_rate).
+
+    Returns:
+        Dict with median/mean net/gross returns and trade counts.
+    """
+    if len(oos_returns) == 0:
+        return None
+
+    fee_rate = variant_config.get('fee_rate', 0.0006)
+    slippage_rate = variant_config.get('slippage_rate', 0.0001)
+
+    # Round-trip cost = 2 * (fee + slippage)
+    roundtrip_cost = 2 * (fee_rate + slippage_rate)
+
+    # Gross return = net return + roundtrip cost
+    gross_returns = oos_returns + roundtrip_cost
+
+    return {
+        'median_net_return_per_trade': float(np.median(oos_returns)),
+        'median_gross_return_per_trade': float(np.median(gross_returns)),
+        'mean_net_return_per_trade': float(np.mean(oos_returns)),
+        'std_net_return_per_trade': float(np.std(oos_returns)),
+        'n_positive_trades': int(np.sum(oos_returns > 0)),
+        'n_negative_trades': int(np.sum(oos_returns < 0)),
+    }
+
+
+def _compute_duration_summary(
+    trade_log: List[Any],
+) -> Optional[Dict[str, Any]]:
+    """
+    Compute trade duration summary.
+
+    Args:
+        trade_log: List of Trade objects with entry_fill_bar and exit_fill_bar.
+
+    Returns:
+        Dict with median/p25/p75 bars, or None if durations unavailable.
+    """
+    if not trade_log:
+        return None
+
+    durations = []
+    for trade in trade_log:
+        # Trade has entry_fill_bar and exit_fill_bar
+        if hasattr(trade, 'entry_fill_bar') and hasattr(trade, 'exit_fill_bar'):
+            duration = trade.exit_fill_bar - trade.entry_fill_bar
+            if duration >= 0:
+                durations.append(duration)
+
+    if not durations:
+        return None
+
+    durations = np.array(durations)
+    return {
+        'median_bars': int(np.median(durations)),
+        'p25_bars': int(np.percentile(durations, 25)),
+        'p75_bars': int(np.percentile(durations, 75)),
+    }
+
+
+def _compute_fold_results(
+    fold_results: List[Any],
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Compute per-fold results for post-mortem.
+
+    Args:
+        fold_results: List of FoldResult objects.
+
+    Returns:
+        List of dicts with fold, oos_sharpe, n_trades.
+    """
+    if not fold_results:
+        return None
+
+    results = []
+    for fold in fold_results:
+        if hasattr(fold, 'fold_id') and hasattr(fold, 'sharpe') and hasattr(fold, 'n_trades'):
+            results.append({
+                'fold': fold.fold_id,
+                'oos_sharpe': float(fold.sharpe),
+                'n_trades': int(fold.n_trades),
+            })
+
+    return results if results else None
 
 
 def run_surrogate_tests(
@@ -541,6 +675,8 @@ def build_manifest(
     n_significant: int,
     runtime_seconds: float,
     data: pd.DataFrame,
+    experiment_id: Optional[str] = None,
+    trade_data_present: bool = False,
 ) -> dict:
     """Build sweep manifest."""
     import platform
@@ -573,8 +709,29 @@ def build_manifest(
         range_start = data.index[0]
         range_end = data.index[-1]
 
-    return {
+    # Compute experiment_id if not provided
+    if experiment_id is None:
+        data_manifest = {
+            'symbol': config.get('symbol', 'UNKNOWN'),
+            'timeframe': config.get('timeframes', ['1h'])[0] if isinstance(config.get('timeframes'), list) else '1h',
+            'date_range': {
+                'start': str(range_start.date()) if hasattr(range_start, 'date') else str(range_start),
+                'end': str(range_end.date()) if hasattr(range_end, 'date') else str(range_end),
+            },
+            'data_fingerprint': data_fingerprint,
+        }
+
+        fees = config.get('fees', {})
+        fill_model = {
+            'fee_rate': fees.get('taker_fee_pct', 0.06) / 100,
+            'slippage_rate': fees.get('slippage_pct', 0.01) / 100,
+        }
+
+        experiment_id = compute_experiment_id(config, data_manifest, fill_model)
+
+    manifest = {
         'sweep_name': config['name'],
+        'experiment_id': experiment_id,
         'git_commit': git_commit,
         'data_range': {
             'start': str(range_start.date()) if hasattr(range_start, 'date') else str(range_start),
@@ -588,6 +745,7 @@ def build_manifest(
         'runtime_seconds': round(runtime_seconds, 2),
         'config_hash': config_hash,
         'data_fingerprint': data_fingerprint,
+        'trade_data_present': trade_data_present,
         'environment': {
             'python_version': sys.version.split()[0],
             'pandas_version': pd.__version__,
@@ -612,6 +770,8 @@ def build_manifest(
             'factor': float(np.sqrt(365 * 6)),  # ~46.80
         },
     }
+
+    return manifest
 
 
 def save_sweep_results(
@@ -668,3 +828,89 @@ def generate_simple_leaderboard(results: List[VariantResult], output_path: Path)
                 f"{r.profit_factor:.2f} | {r.max_drawdown:.1%} | "
                 f"{r.win_rate:.1%} |\n"
             )
+
+
+def finalize_sweep(
+    sweep_dir: str,
+    db_path: str = DEFAULT_KB_PATH,
+) -> str:
+    """
+    Post-sweep pipeline: post-mortem + KB-ingest.
+
+    This is a testable helper that can be called separately from run_sweep.
+
+    Args:
+        sweep_dir: Path to sweep directory.
+        db_path: Path to research.db.
+
+    Returns:
+        Final status: 'INGESTED' or 'NEEDS_REVIEW'.
+    """
+    from research.knowledge_base import init_db, write_event, ingest_sweep
+    from analysis.post_mortem import generate as generate_post_mortem
+
+    sweep_path = Path(sweep_dir)
+
+    # Read manifest to get sweep_id and experiment_id
+    manifest_path = sweep_path / 'manifest.json'
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+
+    sweep_id = manifest.get('sweep_name', sweep_path.name)
+    experiment_id = manifest.get('experiment_id')
+
+    db = init_db(db_path)
+
+    # Step 1: Post-mortem
+    try:
+        write_event(db, 'POST_MORTEM_STARTED', sweep_id, experiment_id)
+        generate_post_mortem(sweep_dir)
+        write_event(db, 'POST_MORTEM_COMPLETED', sweep_id, experiment_id, status='ANALYZED')
+    except Exception as e:
+        write_event(
+            db, 'STEP_FAILED', sweep_id, experiment_id,
+            status='NEEDS_REVIEW',
+            payload={'step': 'post_mortem', 'error': str(e)[:500]}
+        )
+        logger.error(f"Post-mortem failed for {sweep_id}: {e}")
+        return 'NEEDS_REVIEW'
+
+    # Step 2: KB ingest
+    try:
+        write_event(db, 'KB_INGEST_STARTED', sweep_id, experiment_id)
+        ingest_sweep(db, sweep_dir, emit_events=False)  # We emit events manually
+        write_event(db, 'KB_INGEST_COMPLETED', sweep_id, experiment_id, status='INGESTED')
+    except Exception as e:
+        write_event(
+            db, 'STEP_FAILED', sweep_id, experiment_id,
+            status='NEEDS_REVIEW',
+            payload={'step': 'kb_ingest', 'error': str(e)[:500]}
+        )
+        logger.error(f"KB ingest failed for {sweep_id}: {e}")
+        return 'NEEDS_REVIEW'
+
+    logger.info(f"Sweep {sweep_id} finalized successfully")
+    return 'INGESTED'
+
+
+def check_experiment_duplicate(
+    experiment_id: str,
+    db_path: str = DEFAULT_KB_PATH,
+) -> Optional[Dict[str, Any]]:
+    """
+    Check if an experiment_id already exists in KB.
+
+    Args:
+        experiment_id: Experiment ID to check.
+        db_path: Path to research.db.
+
+    Returns:
+        Dict with sweep_id and status if exists, None otherwise.
+    """
+    from research.knowledge_base import init_db, check_experiment_exists
+
+    if not os.path.exists(db_path):
+        return None
+
+    db = init_db(db_path)
+    return check_experiment_exists(db, experiment_id)

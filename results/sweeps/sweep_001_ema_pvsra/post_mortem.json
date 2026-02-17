@@ -1,0 +1,48 @@
+{
+  "sweep_id": "sweep_001_ema_pvsra",
+  "experiment_id": "a510cfed494d5806",
+  "created_ts": "2026-02-17T18:55:10.778283Z",
+  "generated_ts": "2026-02-17T18:55:10.778283Z",
+  "summary": {
+    "variant_count": 270,
+    "survivor_count": 0,
+    "best_variant": {
+      "variant_id": "af60329be6c1",
+      "oos_sharpe": -8.078620194338656,
+      "n_trades_oos": 371,
+      "profit_factor": 0.5249302651005917,
+      "win_rate": 0.1105121293800539
+    }
+  },
+  "fee_decomposition": {
+    "median_gross_return_per_trade": null,
+    "median_net_return_per_trade": null,
+    "estimated_fee_drag_per_trade": 0.0014,
+    "fee_share_of_loss_pct": null,
+    "data_source": "config_only"
+  },
+  "trade_duration_distribution": null,
+  "fold_stability": null,
+  "fold_dispersion": null,
+  "primary_failure_mode": "LOW_SIGNAL",
+  "failure_evidence": "No BH-FDR survivors. Best OOS Sharpe is -8.08, well below threshold of -5.0. Signal does not capture meaningful edge.",
+  "most_promising_region": {
+    "params": {
+      "fast": [
+        5,
+        21
+      ],
+      "slow": [
+        34,
+        100
+      ]
+    },
+    "score": -10.494755354141562,
+    "note": "Least negative OOS Sharpe in top 27 variants"
+  },
+  "next_experiment_constraints": [
+    "reconsider signal hypothesis entirely",
+    "try different entry timing (earlier/later)",
+    "combine with other confirming signals"
+  ]
+}
