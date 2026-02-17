@@ -1,0 +1,61 @@
+# FPR Research Platform - Default Configuration
+
+data:
+  symbol: BTCUSDT
+  exchange: bybit
+  is_start: "2025-08-01"
+  is_end: "2025-12-31"
+  holdout_start: "2026-01-01"
+  holdout_end: "2026-02-15"
+  gap_threshold_minutes: 5
+  min_segment_bars: 5000
+
+fees:
+  taker_fee_rate: 0.0006 # 0.06%
+  slippage_rate: 0.0001 # 0.01%
+
+# Sharpe ratio annualization
+# Crypto trades 365 days/year, not 252 (stocks)
+# Factor = sqrt(trading_days_per_year * avg_trades_per_day)
+# Default assumes ~6 trades per day on average
+sharpe:
+  trading_days_per_year: 365 # Crypto: 365, Stocks: 252
+  avg_trades_per_day: 6 # Adjust based on strategy
+  annualization_factor: null # If set, overrides calculated factor
+
+walk_forward:
+  train_months: 3
+  test_months: 1
+  step_months: 1
+  min_trades_per_fold: 5
+  embargo_bars: 200
+
+statistics:
+  coarse_permutation_n: 500
+  refined_permutation_n: 10000
+  surrogate_count: 100
+  surrogate_pctl_threshold: 90
+  bh_alpha: 0.05
+
+leaderboard:
+  min_oos_sharpe: 1.0
+  min_is_sharpe: 0.5
+  min_trades: 30
+  max_drawdown: 0.20
+  max_sharpe_decay: 0.6
+  min_consistency: 0.60
+  min_surrogate_pctl: 90
+
+ranking_weights:
+  median_oos_sharpe: 0.30
+  profit_factor: 0.20
+  max_drawdown: 0.15
+  consistency: 0.15
+  win_rate: 0.10
+  trade_count: 0.10
+
+seeds:
+  global: 42
+  permutation: 123
+  surrogates: 456
+  sampler: 789

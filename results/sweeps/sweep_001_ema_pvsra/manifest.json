@@ -1,0 +1,34 @@
+{
+  "sweep_name": "sweep_001_ema_pvsra",
+  "git_commit": "unknown",
+  "data_range": {
+    "start": "0",
+    "end": "220319"
+  },
+  "symbol": "BTCUSDT",
+  "n_variants": 288,
+  "n_passed_sanity": 270,
+  "n_bh_survivors": 0,
+  "n_significant": 0,
+  "runtime_seconds": 531.37,
+  "config_hash": "662aaf40e7f79cd310355c27b659e8fd66a7fa8baccb82388ec510de70f9421e",
+  "data_fingerprint": "a6f49dba7611ea15",
+  "environment": {
+    "python_version": "3.13.0",
+    "pandas_version": "3.0.0",
+    "numpy_version": "2.4.2",
+    "platform": "Darwin-x86_64"
+  },
+  "seeds": {
+    "rng_seed_global": 42,
+    "seed_permutation": 123,
+    "seed_surrogates": 456,
+    "seed_sampler": 789
+  },
+  "p_value_stages": {
+    "coarse_n_perm": 500,
+    "refined_n_perm": 10000,
+    "n_coarse_tested": 270,
+    "n_bh_survivors": 0
+  }
+}

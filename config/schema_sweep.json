@@ -1,0 +1,195 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Sweep Configuration",
+  "description": "Schema for FPR Research sweep YAML files",
+  "type": "object",
+  "required": [
+    "name",
+    "symbol",
+    "theory",
+    "entry",
+    "exits",
+    "timeframes",
+    "fees"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unique sweep name",
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "symbol": {
+      "type": "string",
+      "description": "Trading pair symbol (e.g., BTCUSDT)"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description"
+    },
+    "theory": {
+      "type": "string",
+      "description": "Theoretical basis for the strategy",
+      "minLength": 10
+    },
+    "sides": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["long", "short"]
+      },
+      "default": ["long"],
+      "description": "Sides to sweep (separate experiment per side)"
+    },
+    "entry": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Entry signal KEY"
+        },
+        "params": {
+          "type": "object",
+          "description": "Parameter grid for entry signal",
+          "additionalProperties": {
+            "type": "array"
+          }
+        }
+      }
+    },
+    "filters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array"
+            }
+          }
+        }
+      },
+      "default": []
+    },
+    "exits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array"
+            }
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "context": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array"
+            }
+          }
+        }
+      },
+      "default": []
+    },
+    "timeframes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["1min", "5min", "15min", "30min", "1h", "4h", "1d"]
+      },
+      "minItems": 1
+    },
+    "walk_forward": {
+      "type": "object",
+      "properties": {
+        "train_months": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3
+        },
+        "test_months": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "step_months": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "embargo_bars": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 200
+        }
+      }
+    },
+    "fees": {
+      "type": "object",
+      "required": ["taker_fee_pct", "slippage_pct"],
+      "properties": {
+        "taker_fee_pct": {
+          "type": "number",
+          "description": "Taker fee in percent (converted to rate at parse)",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "slippage_pct": {
+          "type": "number",
+          "description": "Slippage in percent (converted to rate at parse)",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "statistics": {
+      "type": "object",
+      "properties": {
+        "coarse_permutation_n": {
+          "type": "integer",
+          "minimum": 100,
+          "default": 500
+        },
+        "refined_permutation_n": {
+          "type": "integer",
+          "minimum": 1000,
+          "default": 10000
+        },
+        "surrogate_count": {
+          "type": "integer",
+          "minimum": 10,
+          "default": 100
+        },
+        "surrogate_pctl_threshold": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 99,
+          "default": 90
+        }
+      }
+    }
+  }
+}
