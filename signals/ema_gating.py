@@ -59,7 +59,8 @@ class EMAGating(SignalComponent):
         }
 
     def lookback_bars(self) -> int:
+        # EMA with adjust=False needs ~2x period for full convergence
         mode = self.params.get('mode', 'above')
         if mode == 'fanned':
-            return 200
-        return self.params.get('period', 50)
+            return 400  # 2x for 200-period EMA
+        return 2 * self.params.get('period', 50)

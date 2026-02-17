@@ -57,6 +57,22 @@ Decisions made during the autonomous build of FPR Research Platform v2.1.
 
 **Rationale:** Warmup is needed for indicator calculation. The caller (walk-forward or strategy) knows the required warmup.
 
+### D9: OOS Warmup Uses Full Dataset
+
+**Decision:** Walk-forward OOS (out-of-sample) test periods use warmup bars from before the test period boundary, i.e., from the training data or earlier in the full dataset. The warmup bars are included in the DataFrame passed to backtest but signals during warmup are ignored.
+
+**Rationale:** This is an accepted design choice for the following reasons:
+
+1. **Not information leakage:** Warmup bars are only used for technical indicator computation (EMA convergence, etc.), not for strategy training or signal optimization. The indicator values are purely mechanical calculations.
+
+2. **Preserves test period integrity:** Without this approach, we would lose the first N bars of every test fold to warmup, reducing effective test data and potentially missing important signals at fold boundaries.
+
+3. **Realistic simulation:** In live trading, you always have historical data available for indicator warmup. Artificially constraining warmup to only test-period data would be unrealistic.
+
+4. **Industry standard:** This approach is consistent with how most backtesting frameworks handle indicator warmup in walk-forward validation.
+
+**Note:** The embargo period (gap between train and test) is separate from warmup and is still enforced to prevent lookahead bias in the training phase.
+
 ---
 
 _This file will be updated as more decisions are made during Phases 2-5._

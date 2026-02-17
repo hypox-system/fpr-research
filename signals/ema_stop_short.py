@@ -45,4 +45,5 @@ class EMAStopShort(SignalComponent):
         }
 
     def lookback_bars(self) -> int:
-        return self.params.get('period', 50)
+        # EMA with adjust=False needs ~2x period for full convergence
+        return 2 * self.params.get('period', 50)

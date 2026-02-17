@@ -146,7 +146,7 @@ def count_variants(sweep_config: dict) -> int:
     )
 
 
-def generate_variant_configs(sweep_config: dict) -> Iterator[dict]:
+def generate_variant_configs(sweep_config: dict, log_constraints: bool = True) -> Iterator[dict]:
     """
     Generate all variant configurations from a sweep config.
 
@@ -160,6 +160,9 @@ def generate_variant_configs(sweep_config: dict) -> Iterator[dict]:
         'side': 'long'|'short',
         'timeframe': '...',
     }
+
+    Note: Applies constraint filtering (e.g., fast < slow for EMA cross)
+    and logs how many variants were pruned by constraints.
     """
     # Expand all component grids
     entry_variants = expand_component_grid(sweep_config['entry'])
@@ -172,13 +175,27 @@ def generate_variant_configs(sweep_config: dict) -> Iterator[dict]:
     timeframes = sweep_config.get('timeframes', ['1h'])
     fees = sweep_config.get('fees', {})
 
-    # Generate all combinations
+    # Track constraint pruning
+    total_raw = 0
+    pruned_count = 0
+    pruned_reasons = {}
+
+    # Generate all combinations with constraint filtering
     for entry in entry_variants:
         for filters in filter_combos:
             for exits in exit_combos:
                 for context in context_combos:
                     for side in sides:
                         for timeframe in timeframes:
+                            total_raw += 1
+
+                            # Apply constraints
+                            skip, reason = _check_constraints(entry, filters, exits)
+                            if skip:
+                                pruned_count += 1
+                                pruned_reasons[reason] = pruned_reasons.get(reason, 0) + 1
+                                continue
+
                             yield {
                                 'entry': entry,
                                 'filters': filters,
@@ -188,6 +205,34 @@ def generate_variant_configs(sweep_config: dict) -> Iterator[dict]:
                                 'side': side,
                                 'timeframe': timeframe,
                             }
+
+    # Log constraint pruning summary
+    if log_constraints and pruned_count > 0:
+        print(f"  Constraint pruning: {pruned_count}/{total_raw} variants removed")
+        for reason, count in pruned_reasons.items():
+            print(f"    - {reason}: {count}")
+
+
+def _check_constraints(entry: dict, filters: list, exits: list) -> tuple:
+    """
+    Check if variant should be pruned due to constraints.
+
+    Returns:
+        (skip: bool, reason: str or None)
+    """
+    entry_type = entry.get('type', '')
+    entry_params = entry.get('params', {})
+
+    # EMA cross constraint: fast must be < slow
+    if entry_type == 'ema_cross':
+        fast = entry_params.get('fast', 0)
+        slow = entry_params.get('slow', 0)
+        if fast >= slow:
+            return True, 'fast >= slow'
+
+    # Add more constraints here as needed
+
+    return False, None
 
 
 def validate_param_ranges(sweep_config: dict) -> List[str]:

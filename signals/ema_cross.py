@@ -55,4 +55,5 @@ class EMACross(SignalComponent):
         }
 
     def lookback_bars(self) -> int:
-        return max(self.params.get('fast', 8), self.params.get('slow', 21)) + 1
+        # EMA with adjust=False needs ~2x period for full convergence
+        return 2 * max(self.params.get('fast', 8), self.params.get('slow', 21))
