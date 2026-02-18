@@ -1,5 +1,5 @@
 -- Knowledge Base Schema for FPR Research Platform
--- Version: Fas 1
+-- Version: Fas 2
 
 -- Events table: append-only event log
 CREATE TABLE IF NOT EXISTS events (
@@ -67,3 +67,24 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_sweep ON artifacts(sweep_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(artifact_type);
+
+-- Proposals table: hypothesis proposals from LLM (Fas 2)
+CREATE TABLE IF NOT EXISTS proposals (
+    proposal_id TEXT PRIMARY KEY,
+    created_ts TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',   -- PENDING/APPROVED/REJECTED/EXPIRED
+    experiment_intent TEXT NOT NULL,           -- gap_fill/failure_mitigation/robustness/regime_test
+    proposed_config_json TEXT NOT NULL,
+    experiment_id TEXT,                        -- pre-computed fingerprint
+    rationale_md TEXT,
+    evidence_refs_json TEXT NOT NULL,
+    novelty_claim_json TEXT NOT NULL,
+    predictions_json TEXT NOT NULL,
+    expected_mechanism TEXT NOT NULL,
+    expected_failure_mode TEXT,
+    kill_criteria_json TEXT NOT NULL,
+    compute_budget_json TEXT NOT NULL,
+    prediction_audit_json TEXT                -- populated post-sweep
+);
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+CREATE INDEX IF NOT EXISTS idx_proposals_experiment ON proposals(experiment_id);

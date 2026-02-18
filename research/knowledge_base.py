@@ -645,6 +645,415 @@ def check_experiment_exists(
     return None
 
 
+# ============================================================================
+# Proposal CRUD (Fas 2)
+# ============================================================================
+
+
+def write_proposal(
+    db: sqlite3.Connection,
+    proposal_id: str,
+    experiment_intent: str,
+    proposed_config: Dict[str, Any],
+    evidence_refs: List[str],
+    novelty_claim: Dict[str, Any],
+    predictions: Dict[str, Any],
+    expected_mechanism: str,
+    kill_criteria: List[str],
+    compute_budget: Dict[str, Any],
+    experiment_id: Optional[str] = None,
+    rationale_md: Optional[str] = None,
+    expected_failure_mode: Optional[str] = None,
+    status: str = 'PENDING',
+) -> str:
+    """
+    Write a proposal to the proposals table.
+
+    Args:
+        db: SQLite connection.
+        proposal_id: Unique ID for the proposal.
+        experiment_intent: Type of experiment (gap_fill, failure_mitigation, etc.).
+        proposed_config: YAML config as dict.
+        evidence_refs: List of sweep_ids that inform this proposal.
+        novelty_claim: Dict with coverage_diff, near_dup_score.
+        predictions: Dict with predicted metrics.
+        expected_mechanism: Explanation of expected mechanism.
+        kill_criteria: List of conditions that would invalidate the hypothesis.
+        compute_budget: Dict with max_variants, max_runtime_minutes.
+        experiment_id: Pre-computed experiment fingerprint.
+        rationale_md: Optional markdown rationale.
+        expected_failure_mode: Most likely failure mode.
+        status: Proposal status (default PENDING).
+
+    Returns:
+        proposal_id
+    """
+    created_ts = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    db.execute(
+        """
+        INSERT INTO proposals (
+            proposal_id, created_ts, status, experiment_intent,
+            proposed_config_json, experiment_id, rationale_md,
+            evidence_refs_json, novelty_claim_json, predictions_json,
+            expected_mechanism, expected_failure_mode, kill_criteria_json,
+            compute_budget_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            proposal_id,
+            created_ts,
+            status,
+            experiment_intent,
+            json.dumps(proposed_config),
+            experiment_id,
+            rationale_md,
+            json.dumps(evidence_refs),
+            json.dumps(novelty_claim),
+            json.dumps(predictions),
+            expected_mechanism,
+            expected_failure_mode,
+            json.dumps(kill_criteria),
+            json.dumps(compute_budget),
+        )
+    )
+    db.commit()
+
+    logger.info(f"Written proposal {proposal_id} with status {status}")
+    return proposal_id
+
+
+def get_proposals(
+    db: sqlite3.Connection,
+    status: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Get proposals, optionally filtered by status.
+
+    Args:
+        db: SQLite connection.
+        status: Optional status filter (PENDING, APPROVED, REJECTED, EXPIRED).
+        limit: Maximum number of proposals to return.
+
+    Returns:
+        List of proposal dicts.
+    """
+    if status:
+        rows = db.execute(
+            """
+            SELECT * FROM proposals
+            WHERE status = ?
+            ORDER BY created_ts DESC
+            LIMIT ?
+            """,
+            (status, limit)
+        ).fetchall()
+    else:
+        rows = db.execute(
+            """
+            SELECT * FROM proposals
+            ORDER BY created_ts DESC
+            LIMIT ?
+            """,
+            (limit,)
+        ).fetchall()
+
+    proposals = []
+    for row in rows:
+        proposals.append(_row_to_proposal(row))
+
+    return proposals
+
+
+def get_proposal(
+    db: sqlite3.Connection,
+    proposal_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Get a single proposal by ID.
+
+    Args:
+        db: SQLite connection.
+        proposal_id: Proposal ID.
+
+    Returns:
+        Proposal dict or None if not found.
+    """
+    row = db.execute(
+        "SELECT * FROM proposals WHERE proposal_id = ?",
+        (proposal_id,)
+    ).fetchone()
+
+    if row:
+        return _row_to_proposal(row)
+    return None
+
+
+def get_proposal_by_experiment_id(
+    db: sqlite3.Connection,
+    experiment_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Get a proposal by experiment_id.
+
+    Args:
+        db: SQLite connection.
+        experiment_id: Experiment fingerprint.
+
+    Returns:
+        Proposal dict or None if not found.
+    """
+    row = db.execute(
+        "SELECT * FROM proposals WHERE experiment_id = ?",
+        (experiment_id,)
+    ).fetchone()
+
+    if row:
+        return _row_to_proposal(row)
+    return None
+
+
+def _row_to_proposal(row: sqlite3.Row) -> Dict[str, Any]:
+    """Convert a database row to a proposal dict."""
+    return {
+        'proposal_id': row['proposal_id'],
+        'created_ts': row['created_ts'],
+        'status': row['status'],
+        'experiment_intent': row['experiment_intent'],
+        'proposed_config': json.loads(row['proposed_config_json']),
+        'experiment_id': row['experiment_id'],
+        'rationale_md': row['rationale_md'],
+        'evidence_refs': json.loads(row['evidence_refs_json']),
+        'novelty_claim': json.loads(row['novelty_claim_json']),
+        'predictions': json.loads(row['predictions_json']),
+        'expected_mechanism': row['expected_mechanism'],
+        'expected_failure_mode': row['expected_failure_mode'],
+        'kill_criteria': json.loads(row['kill_criteria_json']),
+        'compute_budget': json.loads(row['compute_budget_json']),
+        'prediction_audit': json.loads(row['prediction_audit_json']) if row['prediction_audit_json'] else None,
+    }
+
+
+def update_proposal_status(
+    db: sqlite3.Connection,
+    proposal_id: str,
+    status: str,
+    reason: Optional[str] = None,
+) -> bool:
+    """
+    Update proposal status.
+
+    Args:
+        db: SQLite connection.
+        proposal_id: Proposal ID.
+        status: New status (PENDING, APPROVED, REJECTED, EXPIRED).
+        reason: Optional reason for status change.
+
+    Returns:
+        True if updated, False if proposal not found.
+    """
+    result = db.execute(
+        "UPDATE proposals SET status = ? WHERE proposal_id = ?",
+        (status, proposal_id)
+    )
+    db.commit()
+
+    if result.rowcount > 0:
+        # Log event
+        write_event(
+            db,
+            f'PROPOSAL_{status}',
+            experiment_id=proposal_id,
+            status=status,
+            payload={'reason': reason} if reason else None,
+        )
+        logger.info(f"Updated proposal {proposal_id} to status {status}")
+        return True
+
+    return False
+
+
+def write_prediction_audit(
+    db: sqlite3.Connection,
+    proposal_id: str,
+    audit_data: Dict[str, Any],
+) -> bool:
+    """
+    Write prediction audit results to a proposal.
+
+    Args:
+        db: SQLite connection.
+        proposal_id: Proposal ID.
+        audit_data: Audit results dict.
+
+    Returns:
+        True if updated, False if proposal not found.
+    """
+    result = db.execute(
+        "UPDATE proposals SET prediction_audit_json = ? WHERE proposal_id = ?",
+        (json.dumps(audit_data), proposal_id)
+    )
+    db.commit()
+
+    if result.rowcount > 0:
+        logger.info(f"Written prediction audit for proposal {proposal_id}")
+        return True
+
+    return False
+
+
+def count_sweeps(db: sqlite3.Connection) -> int:
+    """
+    Count total number of sweeps in KB.
+
+    Args:
+        db: SQLite connection.
+
+    Returns:
+        Number of sweeps.
+    """
+    row = db.execute("SELECT COUNT(*) as count FROM sweeps").fetchone()
+    return row['count']
+
+
+def get_latest_sweep(db: sqlite3.Connection) -> Optional[Dict[str, Any]]:
+    """
+    Get the most recent sweep.
+
+    Args:
+        db: SQLite connection.
+
+    Returns:
+        Sweep dict or None if no sweeps exist.
+    """
+    row = db.execute(
+        """
+        SELECT * FROM sweeps
+        ORDER BY created_ts DESC
+        LIMIT 1
+        """
+    ).fetchone()
+
+    if not row:
+        return None
+
+    return {
+        'sweep_id': row['sweep_id'],
+        'experiment_id': row['experiment_id'],
+        'status': row['status'],
+        'created_ts': row['created_ts'],
+        'asset': row['asset'],
+        'timeframe': row['timeframe'],
+        'date_range_start': row['date_range_start'],
+        'date_range_end': row['date_range_end'],
+        'primary_failure_mode': row['primary_failure_mode'],
+        'config': json.loads(row['config_json']),
+        'best_metrics': json.loads(row['best_metrics_json']) if row['best_metrics_json'] else None,
+    }
+
+
+def get_top_findings(
+    db: sqlite3.Connection,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """
+    Get top findings by confidence.
+
+    Args:
+        db: SQLite connection.
+        limit: Maximum number of findings.
+
+    Returns:
+        List of finding dicts.
+    """
+    rows = db.execute(
+        """
+        SELECT f.*, s.sweep_id as sweep_ref
+        FROM findings f
+        JOIN sweeps s ON f.sweep_id = s.sweep_id
+        ORDER BY f.confidence DESC, s.created_ts DESC
+        LIMIT ?
+        """,
+        (limit,)
+    ).fetchall()
+
+    findings = []
+    for row in rows:
+        findings.append({
+            'finding_id': row['finding_id'],
+            'sweep_id': row['sweep_id'],
+            'statement': row['statement'],
+            'tags': json.loads(row['tags_json']) if row['tags_json'] else [],
+            'confidence': row['confidence'],
+            'evidence': row['evidence_refs_json'],
+        })
+
+    return findings
+
+
+def get_active_constraints(db: sqlite3.Connection) -> List[str]:
+    """
+    Get active constraints from the most recent sweep's post-mortem.
+
+    Args:
+        db: SQLite connection.
+
+    Returns:
+        List of constraint strings.
+    """
+    # Get latest sweep directory from artifacts
+    row = db.execute(
+        """
+        SELECT a.path
+        FROM artifacts a
+        JOIN sweeps s ON a.sweep_id = s.sweep_id
+        WHERE a.artifact_type = 'post_mortem_json'
+        ORDER BY s.created_ts DESC
+        LIMIT 1
+        """
+    ).fetchone()
+
+    if not row:
+        return []
+
+    try:
+        with open(row['path'], 'r') as f:
+            post_mortem = json.load(f)
+        return post_mortem.get('next_experiment_constraints', [])
+    except Exception as e:
+        logger.warning(f"Failed to load constraints from post_mortem: {e}")
+        return []
+
+
+def get_coverage_entities(db: sqlite3.Connection) -> Dict[str, List[str]]:
+    """
+    Get all covered entities grouped by type.
+
+    Args:
+        db: SQLite connection.
+
+    Returns:
+        Dict mapping entity_type to list of entity_names.
+    """
+    rows = db.execute(
+        """
+        SELECT DISTINCT entity_type, entity_name
+        FROM coverage
+        ORDER BY entity_type, entity_name
+        """
+    ).fetchall()
+
+    coverage = {}
+    for row in rows:
+        entity_type = row['entity_type']
+        if entity_type not in coverage:
+            coverage[entity_type] = []
+        coverage[entity_type].append(row['entity_name'])
+
+    return coverage
+
+
 # CLI
 def main():
     """CLI entry point."""

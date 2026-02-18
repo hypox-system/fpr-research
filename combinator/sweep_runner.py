@@ -830,12 +830,112 @@ def generate_simple_leaderboard(results: List[VariantResult], output_path: Path)
             )
 
 
+def run_prediction_audit(
+    sweep_dir: str,
+    db_path: str,
+    sweep_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Run prediction audit for a completed sweep.
+
+    Compares proposal predictions against actual post-mortem results.
+
+    Args:
+        sweep_dir: Path to sweep directory.
+        db_path: Path to research.db.
+        sweep_id: Sweep ID.
+
+    Returns:
+        Audit result dict, or None if no matching proposal.
+    """
+    from research.knowledge_base import (
+        init_db,
+        get_proposal_by_experiment_id,
+        write_prediction_audit,
+    )
+
+    sweep_path = Path(sweep_dir)
+    post_mortem_path = sweep_path / 'post_mortem.json'
+    manifest_path = sweep_path / 'manifest.json'
+
+    # Load manifest for experiment_id
+    if not manifest_path.exists():
+        return None
+
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+
+    experiment_id = manifest.get('experiment_id')
+    if not experiment_id:
+        return None
+
+    # Check for matching proposal
+    db = init_db(db_path)
+    try:
+        proposal = get_proposal_by_experiment_id(db, experiment_id)
+        if not proposal:
+            # No proposal for this sweep - manual sweep
+            return None
+
+        # Load post_mortem
+        if not post_mortem_path.exists():
+            logger.warning(f"No post_mortem.json for audit: {sweep_dir}")
+            return None
+
+        with open(post_mortem_path, 'r') as f:
+            post_mortem = json.load(f)
+
+        # Compare predictions to actuals
+        predictions = proposal.get('predictions', {})
+        audit = {}
+
+        # Map prediction fields to post-mortem fields
+        field_mapping = {
+            'trade_duration_median_bars': ('trade_duration_distribution', 'median_bars'),
+            'trades_per_day': ('summary', 'trades_per_day'),
+            'gross_minus_net_gap': ('fee_decomposition', 'estimated_fee_drag_per_trade'),
+        }
+
+        for pred_key, pm_path in field_mapping.items():
+            predicted = predictions.get(pred_key)
+            if predicted is None:
+                continue
+
+            # Navigate post_mortem to find actual value
+            actual = post_mortem
+            for path_part in pm_path:
+                if isinstance(actual, dict):
+                    actual = actual.get(path_part)
+                else:
+                    actual = None
+                    break
+
+            if actual is not None:
+                diff_pct = None
+                if predicted != 0:
+                    diff_pct = ((actual - predicted) / abs(predicted)) * 100
+
+                audit[pred_key] = {
+                    'predicted': predicted,
+                    'actual': actual,
+                    'diff_pct': diff_pct,
+                }
+
+        # Write audit to proposal
+        if audit:
+            write_prediction_audit(db, proposal['proposal_id'], audit)
+
+        return audit
+    finally:
+        db.close()
+
+
 def finalize_sweep(
     sweep_dir: str,
     db_path: str = DEFAULT_KB_PATH,
 ) -> str:
     """
-    Post-sweep pipeline: post-mortem + KB-ingest.
+    Post-sweep pipeline: post-mortem + prediction audit + KB-ingest.
 
     This is a testable helper that can be called separately from run_sweep.
 
@@ -875,7 +975,30 @@ def finalize_sweep(
         logger.error(f"Post-mortem failed for {sweep_id}: {e}")
         return 'NEEDS_REVIEW'
 
-    # Step 2: KB ingest
+    # Step 2: Prediction audit (Fas 2)
+    # Run between post-mortem and KB ingest
+    # Non-blocking: failures don't stop the pipeline
+    try:
+        audit_result = run_prediction_audit(sweep_dir, db_path, sweep_id)
+        if audit_result:
+            write_event(
+                db, 'PREDICTION_AUDIT_COMPLETED', sweep_id, experiment_id,
+                payload={'audit': audit_result}
+            )
+        else:
+            write_event(
+                db, 'PREDICTION_AUDIT_SKIPPED', sweep_id, experiment_id,
+                payload={'reason': 'No matching proposal'}
+            )
+    except Exception as e:
+        # Log warning but don't block ingest
+        logger.warning(f"Prediction audit failed for {sweep_id}: {e}")
+        write_event(
+            db, 'PREDICTION_AUDIT_FAILED', sweep_id, experiment_id,
+            payload={'error': str(e)[:500]}
+        )
+
+    # Step 3: KB ingest
     try:
         write_event(db, 'KB_INGEST_STARTED', sweep_id, experiment_id)
         ingest_sweep(db, sweep_dir, emit_events=False)  # We emit events manually

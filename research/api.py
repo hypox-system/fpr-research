@@ -4,7 +4,7 @@ Internal Python API for FPR Research Platform.
 TUI/web interfaces use this API, never DB directly.
 
 Fas 1: Basic wrappers around knowledge_base.py.
-Fas 2 will add proposal management.
+Fas 2: Proposal management, signal catalog, hypothesis pipeline.
 """
 
 from typing import Any, Dict, List, Optional
@@ -15,7 +15,13 @@ from research.knowledge_base import (
     stats as kb_stats,
     export_events as kb_export_events,
     get_sweep_status,
+    get_proposals as kb_get_proposals,
+    get_proposal as kb_get_proposal,
+    update_proposal_status,
+    write_event,
+    get_coverage_entities,
 )
+from research.signal_catalog import discover_signals, get_valid_signal_names
 
 
 def get_feed(
@@ -266,19 +272,156 @@ def get_findings(
 def get_proposals(
     db_path: str,
     status: Optional[str] = None,
+    limit: int = 50,
 ) -> List[Dict[str, Any]]:
     """
-    Get proposals (Fas 2 feature).
+    Get proposals from knowledge base.
 
     Args:
         db_path: Path to research.db.
-        status: Optional status filter.
+        status: Optional status filter (PENDING, APPROVED, REJECTED, EXPIRED).
+        limit: Maximum proposals to return.
 
     Returns:
-        Empty list in Fas 1.
+        List of proposal dicts.
     """
-    # Fas 1: No proposals table yet
-    return []
+    db = init_db(db_path)
+    try:
+        return kb_get_proposals(db, status=status, limit=limit)
+    finally:
+        db.close()
+
+
+def get_proposal(
+    db_path: str,
+    proposal_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Get a single proposal by ID.
+
+    Args:
+        db_path: Path to research.db.
+        proposal_id: Proposal ID.
+
+    Returns:
+        Proposal dict or None if not found.
+    """
+    db = init_db(db_path)
+    try:
+        return kb_get_proposal(db, proposal_id)
+    finally:
+        db.close()
+
+
+def approve_proposal(
+    db_path: str,
+    proposal_id: str,
+) -> bool:
+    """
+    Approve a proposal (change status PENDING -> APPROVED).
+
+    Note: Does NOT start a sweep. That's Fas 4.
+
+    Args:
+        db_path: Path to research.db.
+        proposal_id: Proposal ID.
+
+    Returns:
+        True if updated, False if not found.
+    """
+    db = init_db(db_path)
+    try:
+        return update_proposal_status(db, proposal_id, "APPROVED")
+    finally:
+        db.close()
+
+
+def reject_proposal(
+    db_path: str,
+    proposal_id: str,
+    reason: str,
+) -> bool:
+    """
+    Reject a proposal with reason.
+
+    Args:
+        db_path: Path to research.db.
+        proposal_id: Proposal ID.
+        reason: Rejection reason.
+
+    Returns:
+        True if updated, False if not found.
+    """
+    db = init_db(db_path)
+    try:
+        return update_proposal_status(db, proposal_id, "REJECTED", reason=reason)
+    finally:
+        db.close()
+
+
+def get_signal_catalog() -> Dict[str, Dict[str, Any]]:
+    """
+    Get available signals catalog.
+
+    Returns:
+        Dict mapping signal key to metadata.
+    """
+    return discover_signals()
+
+
+def get_coverage_gaps(db_path: str) -> List[Dict[str, str]]:
+    """
+    Get coverage gaps - signals not yet tested.
+
+    Args:
+        db_path: Path to research.db.
+
+    Returns:
+        List of gaps with entity_type and entity_name.
+    """
+    db = init_db(db_path)
+    try:
+        coverage = get_coverage_entities(db)
+        signals = discover_signals()
+
+        # Find untested signals
+        tested_signals = set(coverage.get("signal", []))
+        gaps = []
+
+        for signal_key, signal_info in signals.items():
+            if signal_key not in tested_signals:
+                gaps.append({
+                    "entity_type": "signal",
+                    "entity_name": signal_key,
+                    "signal_type": signal_info.get("type", "unknown"),
+                })
+
+        return gaps
+    finally:
+        db.close()
+
+
+def run_hypothesis_pipeline(
+    db_path: str,
+    dry_run: bool = False,
+    provider: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Run the hypothesis generation pipeline.
+
+    Wrapper around hypothesis_gen.run() for API layer.
+
+    Args:
+        db_path: Path to research.db.
+        dry_run: If True, don't write to DB.
+        provider: Override LLM provider.
+
+    Returns:
+        Dict with status, proposal_id, reason.
+    """
+    from research.hypothesis_gen import run
+
+    return run(db_path=db_path, dry_run=dry_run, provider=provider)
 
 
 def export_events(

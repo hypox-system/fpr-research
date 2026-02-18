@@ -1,0 +1,32 @@
+# FPR Lab Configuration
+# Change values here, not in code.
+# Override via FPR_LAB_CONFIG environment variable.
+
+post_mortem:
+  thresholds:
+    fee_share_pct: 30
+    fold_dispersion_multiplier: 2.0
+    overtrading_trades_per_month: 500
+    low_signal_sharpe: -5
+    short_trade_bars: 10
+
+verifier:
+  min_evidence_refs: 2
+  min_evidence_refs_bootstrap: 1 # used when KB has < bootstrap_threshold sweeps
+  bootstrap_threshold: 3 # KB sweep count below which bootstrap rules apply
+  max_variants: 500
+  max_runtime_minutes: 120
+  min_kill_criteria: 1
+
+hypothesis:
+  llm_provider: "anthropic"
+  model: "claude-sonnet-4-20250514"
+  temperature: 0.7
+  max_output_tokens: 4000
+  prompt_path: "research/prompts/hypothesis_system.md"
+
+kb_retrieval:
+  max_context_tokens: 2000
+  top_n_findings: 10
+  top_n_constraints: 5
+  include_coverage_gaps: true
